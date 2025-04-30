@@ -81,21 +81,33 @@ conn.commit()
 
 # Клавиатуры
 location_button = KeyboardButton(text="Отправить геопозицию", request_location=True)
-keyboard = ReplyKeyboardMarkup(resize_keyboard=True).add(location_button)
+keyboard = ReplyKeyboardMarkup(
+    keyboard=[[location_button]],
+    resize_keyboard=True
+)
 
-status_keyboard = InlineKeyboardMarkup()
-status_keyboard.add(InlineKeyboardButton(text="Всё в порядке", callback_data="status_ok"))
-status_keyboard.add(InlineKeyboardButton(text="Нужна помощь", callback_data="status_help"))
+status_keyboard = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Всё в порядке", callback_data="status_ok")],
+        [InlineKeyboardButton(text="Нужна помощь", callback_data="status_help")]
+    ]
+)
 
-frequency_keyboard = InlineKeyboardMarkup()
-frequency_keyboard.add(InlineKeyboardButton(text="1 раз", callback_data="freq_1"))
-frequency_keyboard.add(InlineKeyboardButton(text="2 раза (утро, вечер)", callback_data="freq_2"))
-frequency_keyboard.add(InlineKeyboardButton(text="3 раза (утро, день, вечер)", callback_data="freq_3"))
+frequency_keyboard = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="1 раз", callback_data="freq_1")],
+        [InlineKeyboardButton(text="2 раза (утро, вечер)", callback_data="freq_2")],
+        [InlineKeyboardButton(text="3 раза (утро, день, вечер)", callback_data="freq_3")]
+    ]
+)
 
-time_keyboard = InlineKeyboardMarkup()
-time_keyboard.add(InlineKeyboardButton(text="Утро (8:00)", callback_data="time_morning"))
-time_keyboard.add(InlineKeyboardButton(text="День (14:00)", callback_data="time_day"))
-time_keyboard.add(InlineKeyboardButton(text="Вечер (20:00)", callback_data="time_evening"))
+time_keyboard = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Утро (8:00)", callback_data="time_morning")],
+        [InlineKeyboardButton(text="День (14:00)", callback_data="time_day")],
+        [InlineKeyboardButton(text="Вечер (20:00)", callback_data="time_evening")]
+    ]
+)
 
 # Состояния для регистрации
 class Registration(StatesGroup):
@@ -231,9 +243,12 @@ async def process_frequency(callback: types.CallbackQuery, state: FSMContext):
             'checkin_frequency': frequency,
             'checkin_time': None
         })
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton(text="Добавить ещё страну", callback_data="add_country"))
-        keyboard.add(InlineKeyboardButton(text="Завершить", callback_data="finish"))
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Добавить ещё страну", callback_data="add_country")],
+                [InlineKeyboardButton(text="Завершить", callback_data="finish")]
+            ]
+        )
         await callback.message.reply("Хотите добавить ещё одну страну?", reply_markup=keyboard)
         await Registration.AddAnotherCountry.set()
 
@@ -258,9 +273,12 @@ async def process_checkin_time(callback: types.CallbackQuery, state: FSMContext)
         'checkin_frequency': user_data['frequency'],
         'checkin_time': checkin_time
     })
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton(text="Добавить ещё страну", callback_data="add_country"))
-    keyboard.add(InlineKeyboardButton(text="Завершить", callback_data="finish"))
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Добавить ещё страну", callback_data="add_country")],
+            [InlineKeyboardButton(text="Завершить", callback_data="finish")]
+        ]
+    )
     await callback.message.reply("Хотите добавить ещё одну страну?", reply_markup=keyboard)
     await Registration.AddAnotherCountry.set()
 
