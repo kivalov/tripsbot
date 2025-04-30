@@ -208,7 +208,7 @@ async def process_checkin_time(callback: types.CallbackQuery, state: FSMContext)
  user_data['trips'].append({
  'country': user_data['country'],
  'timezone': user_data['timezone'],
- zastrava start_date': user_data['start_date'],
+ 'start_date': user_data['start_date'],
  'end_date': user_data['end_date'],
  'checkin_frequency': user_data['frequency'],
  'checkin_time': checkin_time
