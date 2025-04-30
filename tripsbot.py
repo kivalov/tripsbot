@@ -158,7 +158,7 @@ def format_time_ago(timestamp, tz):
         return "неизвестно"
 
 @dp.message(CommandStart())
-async def start_command(message: types.Message, state: FSMContext):
+async def start_command(message: Message, state: FSMContext):
     """Обрабатывает команду /start и инициирует регистрацию."""
     user_id = message.from_user.id
     cursor.execute('SELECT * FROM employees WHERE user_id = ?', (user_id,))
@@ -172,7 +172,7 @@ async def start_command(message: types.Message, state: FSMContext):
         logging.info(f"Пользователь {user_id} начал регистрацию")
 
 @dp.message(Registration.Name)
-async def process_name(message: types.Message, state: FSMContext):
+async def process_name(message: Message, state: FSMContext):
     """Обрабатывает ввод имени."""
     if not message.text.strip():
         await message.reply("Имя не может быть пустым. Пожалуйста, введите ваше имя:")
@@ -182,7 +182,7 @@ async def process_name(message: types.Message, state: FSMContext):
     await Registration.Country.set()
 
 @dp.message(Registration.Country)
-async def process_country(message: types.Message, state: FSMContext):
+async def process_country(message: Message, state: FSMContext):
     """Обрабатывает ввод страны."""
     country = message.text.strip()
     if not country:
@@ -194,7 +194,7 @@ async def process_country(message: types.Message, state: FSMContext):
     await Registration.StartDate.set()
 
 @dp.message(Registration.StartDate)
-async def process_start_date(message: types.Message, state: FSMContext):
+async def process_start_date(message: Message, state: FSMContext):
     """Обрабатывает ввод даты начала."""
     try:
         start_date = datetime.strptime(message.text, '%Y-%m-%d')
@@ -205,7 +205,7 @@ async def process_start_date(message: types.Message, state: FSMContext):
         await message.reply("Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
 
 @dp.message(Registration.EndDate)
-async def process_end_date(message: types.Message, state: FSMContext):
+async def process_end_date(message: Message, state: FSMContext):
     """Обрабатывает ввод даты окончания."""
     try:
         end_date = datetime.strptime(message.text, '%Y-%m-%d')
@@ -221,7 +221,7 @@ async def process_end_date(message: types.Message, state: FSMContext):
         await message.reply("Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
 
 @dp.callback_query(lambda c: c.data.startswith('freq_'))
-async def process_frequency(callback: types.CallbackQuery, state: FSMContext):
+async def process_frequency(callback: CallbackQuery, state: FSMContext):
     """Обрабатывает выбор частоты чек-инов."""
     freq_map = {'freq_1': 1, 'freq_2': 2, 'freq_3': 3}
     frequency = freq_map.get(callback.data)
@@ -253,7 +253,7 @@ async def process_frequency(callback: types.CallbackQuery, state: FSMContext):
         await Registration.AddAnotherCountry.set()
 
 @dp.callback_query(lambda c: c.data.startswith('time_'))
-async def process_checkin_time(callback: types.CallbackQuery, state: FSMContext):
+async def process_checkin_time(callback: CallbackQuery, state: FSMContext):
     """Обрабатывает выбор времени чек-ина."""
     time_map = {
         'time_morning': 'morning',
@@ -283,7 +283,7 @@ async def process_checkin_time(callback: types.CallbackQuery, state: FSMContext)
     await Registration.AddAnotherCountry.set()
 
 @dp.callback_query(lambda c: c.data in ['add_country', 'finish'])
-async def process_add_country(callback: types.CallbackQuery, state: FSMContext):
+async def process_add_country(callback: CallbackQuery, state: FSMContext):
     """Обрабатывает выбор добавления страны или завершения регистрации."""
     if callback.data == "add_country":
         await callback.message.reply("Введите следующую страну пребывания:")
@@ -309,7 +309,7 @@ async def process_add_country(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.reply("Произошла ошибка при регистрации. Попробуйте снова.")
 
 @dp.message(content_types=['location'])
-async def handle_location(message: types.Message, state: FSMContext):
+async def handle_location(message: Message, state: FSMContext):
     """Обрабатывает отправку геопозиции."""
     user_id = message.from_user.id
     cursor.execute('SELECT * FROM employees WHERE user_id = ?', (user_id,))
@@ -328,7 +328,7 @@ async def handle_location(message: types.Message, state: FSMContext):
     logging.info(f"Геопозиция получена от {user_id}: ({location.latitude}, {location.longitude})")
 
 @dp.callback_query(lambda c: c.data.startswith('status_'))
-async def handle_status(callback: types.CallbackQuery, state: FSMContext):
+async def handle_status(callback: CallbackQuery, state: FSMContext):
     """Обрабатывает выбор статуса чек-ина."""
     user_id = callback.from_user.id
     cursor.execute('SELECT * FROM employees WHERE user_id = ?', (user_id,))
@@ -357,7 +357,7 @@ async def handle_status(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.reply("Произошла ошибка при регистрации чек-ина.")
 
 @dp.message(Command("list"))
-async def list_employees(message: types.Message):
+async def list_employees(message: Message):
     """Выводит список всех сотрудников (для админа)."""
     if message.from_user.id != ADMIN_ID:
         return
@@ -381,7 +381,7 @@ async def list_employees(message: types.Message):
         await message.reply("Произошла ошибка при получении списка сотрудников.")
 
 @dp.message(Command("status"))
-async def employee_status(message: types.Message):
+async def employee_status(message: Message):
     """Выводит статус сотрудника по ID (для админа)."""
     if message.from_user.id != ADMIN_ID:
         return
@@ -424,7 +424,7 @@ async def employee_status(message: types.Message):
         await message.reply("Произошла ошибка при получении статуса.")
 
 @dp.message(Command("export"))
-async def export_checkins(message: types.Message):
+async def export_checkins(message: Message):
     """Экспортирует чек-ины в CSV (для админа)."""
     if message.from_user.id != ADMIN_ID:
         return
@@ -440,14 +440,14 @@ async def export_checkins(message: types.Message):
             writer.writerow(checkin)
 
         output.seek(0)
-        await message.reply_document(types.InputFile(output, filename='checkins.csv'), caption="Экспорт чек-инов")
+        await message.reply_document(InputFile(output, filename='checkins.csv'), caption="Экспорт чек-инов")
         logging.info("Чек-ины экспортированы в CSV")
     except Exception as e:
         logging.error(f"Ошибка при экспорте чек-инов: {e}")
         await message.reply("Произошла ошибка при экспорте чек-инов.")
 
 @dp.message(Command("map"))
-async def show_map(message: types.Message):
+async def show_map(message: Message):
     """Показывает карту с позициями активных сотрудников (для админа)."""
     if message.from_user.id != ADMIN_ID:
         return
