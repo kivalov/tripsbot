@@ -5,8 +5,8 @@ import csv
 from io import StringIO
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, InputFile
-from aiogram.filters import Command, CommandStart
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, InputFile, ContentType
+from aiogram.filters import Command, CommandStart, ContentTypeFilter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -308,7 +308,7 @@ async def process_add_country(callback: CallbackQuery, state: FSMContext):
             logging.error(f"Ошибка при сохранении данных пользователя {user_id}: {e}")
             await callback.message.reply("Произошла ошибка при регистрации. Попробуйте снова.")
 
-@dp.message(content_types=['location'])
+@dp.message(ContentTypeFilter(content_types=[ContentType.LOCATION]))
 async def handle_location(message: Message, state: FSMContext):
     """Обрабатывает отправку геопозиции."""
     user_id = message.from_user.id
