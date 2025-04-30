@@ -4,12 +4,12 @@ import sqlite3
 import csv
 from io import StringIO
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, executor, types
+from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.dispatcher.filters import Command
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 import pycountry
 from timezonefinder import TimezoneFinder
 from pytz import timezone
@@ -119,28 +119,32 @@ def format_time_ago(timestamp, tz):
     return "менее часа назад" if hours_ago == 0 else f"{hours_ago} часов назад"
 
 # Обработчик команды /start
-@dp.message_handler(commands=['start'])
-async def start_command(message: types.Message):
+@dp.message(CommandStart())
+async def start_command(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     cursor.execute('SELECT * FROM employees WHERE user_id = ?', (user_id,))
     if cursor.fetchone():
         await message.reply("Вы уже зарегистрированы. Отправьте геопозицию.", reply_markup=keyboard)
     else:
         username = message.from_user.username or None
-        await message.bot.get_state(user_id).update_data(username=username, trips=[])
+        await state.update_data(username=username, trips=[])
         await message.reply("Начнём регистрацию. Введите ваше имя:")
         await Registration.Name.set()
 
 # Регистрация: имя
-@dp.message_handler(state=Registration.Name)
+@dp.message()
 async def process_name(message: types.Message, state: FSMContext):
+    if await state.get_state() != Registration.Name.state:
+        return
     await state.update_data(name=message.text)
     await message.reply("Введите первую страну пребывания:")
     await Registration.Country.set()
 
 # Регистрация: страна
-@dp.message_handler(state=Registration.Country)
+@dp.message()
 async def process_country(message: types.Message, state: FSMContext):
+    if await state.get_state() != Registration.Country.state:
+        return
     country = message.text
     timezone_str = get_timezone_by_country(country)
     await state.update_data(country=country, timezone=timezone_str)
@@ -148,8 +152,10 @@ async def process_country(message: types.Message, state: FSMContext):
     await Registration.StartDate.set()
 
 # Регистрация: дата начала
-@dp.message_handler(state=Registration.StartDate)
+@dp.message()
 async def process_start_date(message: types.Message, state: FSMContext):
+    if await state.get_state() != Registration.StartDate.state:
+        return
     try:
         datetime.strptime(message.text, '%Y-%m-%d')
         await state.update_data(start_date=message.text)
@@ -159,8 +165,10 @@ async def process_start_date(message: types.Message, state: FSMContext):
         await message.reply("Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
 
 # Регистрация: дата окончания
-@dp.message_handler(state=Registration.EndDate)
+@dp.message()
 async def process_end_date(message: types.Message, state: FSMContext):
+    if await state.get_state() != Registration.EndDate.state:
+        return
     try:
         datetime.strptime(message.text, '%Y-%m-%d')
         await state.update_data(end_date=message.text)
@@ -170,10 +178,14 @@ async def process_end_date(message: types.Message, state: FSMContext):
         await message.reply("Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
 
 # Регистрация: частота чек-инов
-@dp.callback_query_handler(state=Registration.Frequency)
+@dp.callback_query()
 async def process_frequency(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != Registration.Frequency.state:
+        return
     freq_map = {'freq_1': 1, 'freq_2': 2, 'freq_3': 3}
-    frequency = freq_map[callback.data]
+    frequency = freq_map.get(callback.data)
+    if not frequency:
+        return
     await state.update_data(frequency=frequency)
 
     if frequency == 1:
@@ -196,14 +208,18 @@ async def process_frequency(callback: types.CallbackQuery, state: FSMContext):
         await Registration.AddAnotherCountry.set()
 
 # Регистрация: выбор времени чек-ина
-@dp.callback_query_handler(state=Registration.CheckinTime)
+@dp.callback_query()
 async def process_checkin_time(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != Registration.CheckinTime.state:
+        return
     time_map = {
         'time_morning': 'morning',
         'time_day': 'day',
         'time_evening': 'evening'
     }
-    checkin_time = time_map[callback.data]
+    checkin_time = time_map.get(callback.data)
+    if not checkin_time:
+        return
     user_data = await state.get_data()
     user_data['trips'].append({
         'country': user_data['country'],
@@ -220,12 +236,14 @@ async def process_checkin_time(callback: types.CallbackQuery, state: FSMContext)
     await Registration.AddAnotherCountry.set()
 
 # Регистрация: добавить ещё страну или завершить
-@dp.callback_query_handler(state=Registration.AddAnotherCountry)
+@dp.callback_query()
 async def process_add_country(callback: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() != Registration.AddAnotherCountry.state:
+        return
     if callback.data == "add_country":
         await callback.message.reply("Введите следующую страну пребывания:")
         await Registration.Country.set()
-    else:
+    elif callback.data == "finish":
         user_data = await state.get_data()
         user_id = callback.from_user.id
         cursor.execute('INSERT INTO employees (user_id, name, username) VALUES (?, ?, ?)', 
@@ -241,7 +259,7 @@ async def process_add_country(callback: types.CallbackQuery, state: FSMContext):
         await state.finish()
 
 # Обработчик геопозиции
-@dp.message_handler(content_types=['location'])
+@dp.message(content_types=types.ContentType.LOCATION)
 async def handle_location(message: types.Message):
     user_id = message.from_user.id
     cursor.execute('SELECT * FROM employees WHERE user_id = ?', (user_id,))
@@ -255,7 +273,7 @@ async def handle_location(message: types.Message):
     await message.bot.get_state(user_id).update_data(latitude=location.latitude, longitude=location.longitude)
 
 # Обработчик статуса
-@dp.callback_query_handler(lambda c: c.data.startswith('status_'))
+@dp.callback_query(lambda c: c.data.startswith('status_'))
 async def handle_status(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     cursor.execute('SELECT * FROM employees WHERE user_id = ?', (user_id,))
@@ -280,8 +298,10 @@ async def handle_status(callback: types.CallbackQuery):
     await callback.message.reply(f"Чек-ин зарегистрирован: {status}\nКарта: {maps_url}")
 
 # Админ-команда: список сотрудников
-@dp.message_handler(commands=['list'], user_id=ADMIN_ID)
+@dp.message(Command("list"))
 async def list_employees(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
     cursor.execute('SELECT user_id, name, username, archived FROM employees')
     employees = cursor.fetchall()
     if not employees:
@@ -298,8 +318,10 @@ async def list_employees(message: types.Message):
     await message.reply(response)
 
 # Админ-команда: статус сотрудника
-@dp.message_handler(commands=['status'], user_id=ADMIN_ID)
+@dp.message(Command("status"))
 async def employee_status(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
     try:
         user_id = int(message.text.split()[1])
         cursor.execute('SELECT name, username, archived FROM employees WHERE user_id = ?', (user_id,))
@@ -336,8 +358,10 @@ async def employee_status(message: types.Message):
         await message.reply("Использование: /status <user_id>")
 
 # Админ-команда: экспорт чек-инов
-@dp.message_handler(commands=['export'], user_id=ADMIN_ID)
+@dp.message(Command("export"))
 async def export_checkins(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
     cursor.execute('SELECT c.user_id, e.name, e.username, c.latitude, c.longitude, c.status, c.timestamp '
                   'FROM checkins c JOIN employees e ON c.user_id = e.user_id')
     checkins = cursor.fetchall()
@@ -352,8 +376,10 @@ async def export_checkins(message: types.Message):
     await message.reply_document(types.InputFile(output, filename='checkins.csv'), caption="Экспорт чек-инов")
 
 # Админ-команда: карта всех сотрудников
-@dp.message_handler(commands=['map'], user_id=ADMIN_ID)
+@dp.message(Command("map"))
 async def show_map(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
     cursor.execute('SELECT user_id, name, username FROM employees WHERE archived = 0')
     employees = cursor.fetchall()
     if not employees:
@@ -370,17 +396,14 @@ async def show_map(message: types.Message):
             cursor.execute('SELECT latitude, longitude, timestamp FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
             checkin = cursor.fetchone()
             if checkin:
-                # Форматируем даты в ДД МММ
                 start_date = datetime.strptime(trip[1], '%Y-%m-%d')
                 end_date = datetime.strptime(trip[2], '%Y-%m-%d')
                 start_str = f"{start_date.day:02d} {MONTHS[start_date.month]}"
                 end_str = f"{end_date.day:02d} {MONTHS[end_date.month]}"
                 
-                # Время последнего чек-ина
                 tz = timezone(trip[3])
                 time_ago = format_time_ago(checkin[2], tz)
                 
-                # Формируем метку
                 label = f"{name}{f' @{username}' if username else ''}, {start_str} - {end_str}, последний чек-ин: {time_ago}"
                 label = label.replace(" ", "+")
                 markers.append(f"{checkin[0]},{checkin[1]},{label}")
@@ -430,7 +453,6 @@ async def check_employees():
             freq = current_trip[5]
             checkin_time = current_trip[6]
 
-            # Определяем времена чек-инов
             if freq == 1 and checkin_time:
                 time_map = {
                     'morning': (8, 0),
@@ -452,9 +474,7 @@ async def check_employees():
             for checkin_hour, checkin_minute in checkin_times:
                 expected_time = current_time_tz.replace(hour=checkin_hour, minute=checkin_minute, second=0, microsecond=0)
                 if expected_time.date() == current_time_tz.date():
-                    # Отправка напоминания
                     await send_reminder(user_id, tz, expected_time)
-                    # Проверка пропущенного чек-ина
                     if expected_time > last_checkin_time and (current_time_tz - expected_time).total_seconds() > 3600:
                         maps_url = ""
                         cursor.execute('SELECT latitude, longitude FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
@@ -471,9 +491,11 @@ async def check_employees():
 
         await asyncio.sleep(1800)  # Проверяем каждые 30 минут
 
-# Запуск проверки
-async def on_startup(_):
+# Запуск бота
+async def main():
+    await bot.delete_webhook()  # Пропускаем старые обновления
     asyncio.create_task(check_employees())
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    asyncio.run(main())
