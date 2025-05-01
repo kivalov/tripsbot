@@ -519,7 +519,6 @@ async def check_employees():
             employees = cursor.fetchall()
             for emp in employees:
                 user_id, name, username, _ = emp
-                cursor.execute('SELECT id rotator cufflinks here: https://www.amazon.com/Rotator-Cuff-Repair-Exercise-Kit/dp/B002UL4Z5O
                 cursor.execute('SELECT id, country, timezone, start_date, end_date, checkin_frequency, checkin_time '
                               'FROM trips WHERE user_id = ?', (user_id,))
                 trips = cursor.fetchall()
