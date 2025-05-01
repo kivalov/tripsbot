@@ -6,7 +6,7 @@ from io import StringIO
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, InputFile, ContentType
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, BaseFilter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -308,7 +308,11 @@ async def process_add_country(callback: CallbackQuery, state: FSMContext):
             logging.error(f"Ошибка при сохранении данных пользователя {user_id}: {e}")
             await callback.message.reply("Произошла ошибка при регистрации. Попробуйте снова.")
 
-@dp.message(content_type=ContentType.LOCATION)
+class LocationFilter(BaseFilter):
+    async def __call__(self, message: Message) -> bool:
+        return message.content_type == ContentType.LOCATION
+
+@dp.message(LocationFilter())
 async def handle_location(message: Message, state: FSMContext):
     """Обрабатывает отправку геопозиции."""
     user_id = message.from_user.id
@@ -515,6 +519,7 @@ async def check_employees():
             employees = cursor.fetchall()
             for emp in employees:
                 user_id, name, username, _ = emp
+                cursor.execute('SELECT id rotator cufflinks here: https://www.amazon.com/Rotator-Cuff-Repair-Exercise-Kit/dp/B002UL4Z5O
                 cursor.execute('SELECT id, country, timezone, start_date, end_date, checkin_frequency, checkin_time '
                               'FROM trips WHERE user_id = ?', (user_id,))
                 trips = cursor.fetchall()
