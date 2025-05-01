@@ -168,7 +168,7 @@ async def start_command(message: Message, state: FSMContext):
         username = message.from_user.username or None
         await state.update_data(username=username, trips=[])
         await message.reply("Начнём регистрацию. Введите ваше имя:")
-        await Registration.Name.set()
+        await state.set_state(Registration.Name)
         logging.info(f"Пользователь {user_id} начал регистрацию")
 
 @dp.message(Registration.Name)
@@ -179,7 +179,7 @@ async def process_name(message: Message, state: FSMContext):
         return
     await state.update_data(name=message.text.strip())
     await message.reply("Введите первую страну пребывания:")
-    await Registration.Country.set()
+    await state.set_state(Registration.Country)
 
 @dp.message(Registration.Country)
 async def process_country(message: Message, state: FSMContext):
@@ -191,7 +191,7 @@ async def process_country(message: Message, state: FSMContext):
     timezone_str = get_timezone_by_country(country)
     await state.update_data(country=country, timezone=timezone_str)
     await message.reply("Введите дату начала пребывания (ГГГГ-ММ-ДД):")
-    await Registration.StartDate.set()
+    await state.set_state(Registration.StartDate)
 
 @dp.message(Registration.StartDate)
 async def process_start_date(message: Message, state: FSMContext):
@@ -200,7 +200,7 @@ async def process_start_date(message: Message, state: FSMContext):
         start_date = datetime.strptime(message.text, '%Y-%m-%d')
         await state.update_data(start_date=message.text)
         await message.reply("Введите дату окончания пребывания (ГГГГ-ММ-ДД):")
-        await Registration.EndDate.set()
+        await state.set_state(Registration.EndDate)
     except ValueError:
         await message.reply("Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
 
@@ -216,7 +216,7 @@ async def process_end_date(message: Message, state: FSMContext):
             return
         await state.update_data(end_date=message.text)
         await message.reply("Выберите частоту чек-инов:", reply_markup=frequency_keyboard)
-        await Registration.Frequency.set()
+        await state.set_state(Registration.Frequency)
     except ValueError:
         await message.reply("Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
 
@@ -232,7 +232,7 @@ async def process_frequency(callback: CallbackQuery, state: FSMContext):
 
     if frequency == 1:
         await callback.message.reply("Выберите время чек-ина:", reply_markup=time_keyboard)
-        await Registration.CheckinTime.set()
+        await state.set_state(Registration.CheckinTime)
     else:
         user_data = await state.get_data()
         user_data['trips'].append({
@@ -250,7 +250,7 @@ async def process_frequency(callback: CallbackQuery, state: FSMContext):
             ]
         )
         await callback.message.reply("Хотите добавить ещё одну страну?", reply_markup=keyboard)
-        await Registration.AddAnotherCountry.set()
+        await state.set_state(Registration.AddAnotherCountry)
 
 @dp.callback_query(lambda c: c.data.startswith('time_'))
 async def process_checkin_time(callback: CallbackQuery, state: FSMContext):
@@ -280,14 +280,14 @@ async def process_checkin_time(callback: CallbackQuery, state: FSMContext):
         ]
     )
     await callback.message.reply("Хотите добавить ещё одну страну?", reply_markup=keyboard)
-    await Registration.AddAnotherCountry.set()
+    await state.set_state(Registration.AddAnotherCountry)
 
 @dp.callback_query(lambda c: c.data in ['add_country', 'finish'])
 async def process_add_country(callback: CallbackQuery, state: FSMContext):
     """Обрабатывает выбор добавления страны или завершения регистрации."""
     if callback.data == "add_country":
         await callback.message.reply("Введите следующую страну пребывания:")
-        await Registration.Country.set()
+        await state.set_state(Registration.Country)
     elif callback.data == "finish":
         user_data = await state.get_data()
         user_id = callback.from_user.id
