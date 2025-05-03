@@ -103,7 +103,7 @@ frequency_keyboard = InlineKeyboardMarkup(
 
 time_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="Утро (8:00)", callback_data="time_morning")],
+        [InlineKeyboardButton(text="Утро (08:00)", callback_data="time_morning")],
         [InlineKeyboardButton(text="День (14:00)", callback_data="time_day")],
         [InlineKeyboardButton(text="Вечер (20:00)", callback_data="time_evening")]
     ]
@@ -118,12 +118,6 @@ class Registration(StatesGroup):
     Frequency = State()
     CheckinTime = State()
     AddAnotherCountry = State()
-
-# Константы
-MONTHS = {
-    1: 'Янв', 2: 'Фев', 3: 'Мар', 4: 'Апр', 5: 'Май', 6: 'Июн',
-    7: 'Июл', 8: 'Авг', 9: 'Сен', 10: 'Окт', 11: 'Ноя', 12: 'Дек'
-}
 
 # Словарь для отслеживания отправленных напоминаний
 reminders_sent = {}
@@ -144,6 +138,19 @@ def get_timezone_by_country(country_name):
         return timezone_str
     except Exception as e:
         logging.error(f"Ошибка при определении часового пояса для {country_name}: {e}")
+        return 'UTC'
+
+def get_timezone_by_coordinates(latitude, longitude):
+    """Получает часовой пояс по координатам."""
+    try:
+        tf = TimezoneFinder()
+        timezone_str = tf.timezone_at(lat=latitude, lng=longitude)
+        if not timezone_str:
+            logging.warning(f"Не удалось определить часовой пояс для координат ({latitude}, {longitude})")
+            return 'UTC'
+        return timezone_str
+    except Exception as e:
+        logging.error(f"Ошибка при определении часового пояса для координат ({latitude}, {longitude}): {e}")
         return 'UTC'
 
 def format_time_ago(timestamp, tz):
@@ -327,9 +334,21 @@ async def handle_location(message: Message, state: FSMContext):
         await message.reply("Некорректная геопозиция. Пожалуйста, отправьте снова.")
         return
 
+    # Определяем часовой пояс на основе координат
+    timezone_str = get_timezone_by_coordinates(location.latitude, location.longitude)
+    
+    # Обновляем часовой пояс в таблице trips для текущей поездки
+    current_date = datetime.now().strftime('%Y-%m-%d')
+    cursor.execute('''
+        UPDATE trips
+        SET timezone = ?
+        WHERE user_id = ? AND ? BETWEEN start_date AND end_date
+    ''', (timezone_str, user_id, current_date))
+    conn.commit()
+
     await state.update_data(latitude=location.latitude, longitude=location.longitude)
     await message.reply("Геопозиция получена. Выберите статус:", reply_markup=status_keyboard)
-    logging.info(f"Геопозиция получена от {user_id}: ({location.latitude}, {location.longitude})")
+    logging.info(f"Геопозиция получена от {user_id}: ({location.latitude}, {location.longitude}), часовой пояс: {timezone_str}")
 
 @dp.callback_query(lambda c: c.data.startswith('status_'))
 async def handle_status(callback: CallbackQuery, state: FSMContext):
@@ -410,9 +429,8 @@ async def employee_status(message: Message):
                 f"Статус: {'Архив' if employee[2] else 'Активен'}\n"
                 f"Поездки: {trip_info}\n"
                 f"Последний чек-ин: {checkin[3]}\n"
-                f"Геопозиция: {checkin[0]}, {checkin[1]}\n"
-                f"Статус: {checkin[2]}\n"
-                f"Карта: {maps_url}"
+                f"Карта: {maps_url}\n"
+                f"Статус: {checkin[2]}"
             )
         else:
             await message.reply(
@@ -434,7 +452,7 @@ async def export_checkins(message: Message):
         return
     try:
         cursor.execute('SELECT c.user_id, e.name, e.username, c.latitude, c.longitude, c.status, c.timestamp '
-                      'FROM checkins c JOIN e ON c.user_id = e.user_id')
+                      'FROM checkins c JOIN employees e ON c.user_id = e.user_id')
         checkins = cursor.fetchall()
 
         output = StringIO()
@@ -450,62 +468,6 @@ async def export_checkins(message: Message):
         logging.error(f"Ошибка при экспорте чек-инов: {e}")
         await message.reply("Произошла ошибка при экспорте чек-инов.")
 
-@dp.message(Command("map"))
-async def show_map(message: Message):
-    """Показывает карту с позициями активных сотрудников (для админа)."""
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        cursor.execute('SELECT user_id, name, username FROM employees WHERE archived = 0')
-        employees = cursor.fetchall()
-        if not employees:
-            await message.reply("Нет активных сотрудников.")
-            return
-
-        markers = []
-        employee_info = []
-        for emp in employees:
-            user_id, name, username = emp
-            cursor.execute('SELECT country, start_date, end_date, timezone FROM trips WHERE user_id = ? AND ? BETWEEN start_date AND end_date', 
-                          (user_id, datetime.now().strftime('%Y-%m-%d')))
-            trip = cursor.fetchone()
-            if trip:
-                cursor.execute('SELECT latitude, longitude, timestamp FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
-                checkin = cursor.fetchone()
-                if checkin:
-                    start_date = datetime.strptime(trip[1], '%Y-%m-%d')
-                    end_date = datetime.strptime(trip[2], '%Y-%m-%d')
-                    start_str = f"{start_date.day:02d} {MONTHS[start_date.month]}"
-                    end_str = f"{end_date.day:02d} {MONTHS[end_date.month]}"
-                    
-                    tz = timezone(trip[3])
-                    time_ago = format_time_ago(checkin[2], tz)
-                    
-                    # Добавляем координаты для карты
-                    markers.append(f"{checkin[0]},{checkin[1]}")
-                    # Собираем информацию о сотруднике для текстового сообщения
-                    employee_info.append(
-                        f"{name}{f' @{username}' if username else ''}, {start_str} - {end_str}, "
-                        f"последний чек-ин: {time_ago}, координаты: {checkin[0]}, {checkin[1]}"
-                    )
-
-        if not markers:
-            await message.reply("Нет актуальных геопозиций для активных сотрудников.")
-            return
-
-        # Формируем текстовое сообщение с информацией о сотрудниках
-        response = "Позиции сотрудников:\n" + "\n".join(employee_info) + "\n\n"
-        
-        # Формируем ссылку на карту с координатами
-        base_url = "https://www.google.com/maps/search/?api=1&query="
-        map_url = base_url + "|".join(markers)
-        response += f"Карта: {map_url}"
-        
-        await message.reply(response)
-    except Exception as e:
-        logging.error(f"Ошибка при формировании карты: {e}")
-        await message.reply("Произошла ошибка при формировании карты.")
-
 async def send_reminder(user_id, tz, checkin_time):
     """Отправляет напоминание о необходимости чек-ина."""
     reminder_time = checkin_time - timedelta(minutes=30)
@@ -514,11 +476,11 @@ async def send_reminder(user_id, tz, checkin_time):
         try:
             await bot.send_message(
                 user_id,
-                f"Напоминание: отправьте чек-ин в {checkin_time.strftime('%H:%M')}!",
+                f"Напоминание: отправьте чек-ин в {checkin_time.strftime('%H:%M')} ({tz.zone})!",
                 reply_markup=keyboard
             )
             reminders_sent[reminder_key] = True
-            logging.info(f"Напоминание отправлено пользователю {user_id} для {checkin_time}")
+            logging.info(f"Напоминание отправлено пользователю {user_id} для {checkin_time} ({tz.zone})")
         except Exception as e:
             logging.error(f"Ошибка при отправке напоминания пользователю {user_id}: {e}")
 
@@ -578,19 +540,19 @@ async def check_employees():
                     if expected_time.date() == current_time_tz.date():
                         await send_reminder(user_id, tz, expected_time)
                         if expected_time > last_checkin_time and (current_time_tz - expected_time).total_seconds() > 3600:
-                            maps_url = ""
+                            last_location = ""
                             cursor.execute('SELECT latitude, longitude FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
-                            last_location = cursor.fetchone()
-                            if last_location:
-                                maps_url = f"https://www.google.com/maps?q={last_location[0]},{last_location[1]}"
+                            last_location_data = cursor.fetchone()
+                            if last_location_data:
+                                last_location = f"Координаты: {last_location_data[0]}, {last_location_data[1]}"
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"Сотрудник {name}{f' @{username}' if username else ''} не отправил чек-ин!\n"
-                                f"Ожидалось: {expected_time}\n"
-                                f"Последний чек-ин: {last_checkin_time if last_checkin else 'Никогда'}\n"
-                                f"Последняя локация: {maps_url or 'Неизвестно'}"
+                                f"Ожидалось: {expected_time.strftime('%H:%M')} ({tz.zone})\n"
+                                f"Последний чек-ин: {(last_checkin_time.strftime('%Y-%m-%d %H:%M') if last_checkin else 'Никогда')}\n"
+                                f"Последняя локация: {last_location or 'Неизвестно'}"
                             )
-                            logging.warning(f"Пропущен чек-ин для {user_id} в {expected_time}")
+                            logging.warning(f"Пропущен чек-ин для {user_id} в {expected_time} ({tz.zone})")
         except Exception as e:
             logging.error(f"Ошибка в check_employees: {e}")
         await asyncio.sleep(1800)
