@@ -5,7 +5,7 @@ import csv
 from io import StringIO
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, InputFile, ContentType
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery, BufferedInputFile, ContentType
 from aiogram.filters import Command, CommandStart, BaseFilter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
@@ -310,7 +310,7 @@ async def process_add_country(callback: CallbackQuery, state: FSMContext):
             conn.commit()
             await callback.message.reply("Регистрация завершена! Отправляйте геопозицию.", reply_markup=keyboard)
             logging.info(f"Пользователь {user_id} завершил регистрацию: {user_data['name']}")
-            await state.finish()
+            await state.clear()
         except Exception as e:
             logging.error(f"Ошибка при сохранении данных пользователя {user_id}: {e}")
             await callback.message.reply("Произошла ошибка при регистрации. Попробуйте снова.")
@@ -405,42 +405,62 @@ async def list_employees(message: Message):
 
 @dp.message(Command("status"))
 async def employee_status(message: Message):
-    """Выводит статус сотрудника по ID (для админа)."""
+    """Выводит статус сотрудника по ID или @username (для админа)."""
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        user_id = int(message.text.split()[1])
-        cursor.execute('SELECT name, username, archived FROM employees WHERE user_id = ?', (user_id,))
-        employee = cursor.fetchone()
+        input_str = message.text.split()[1] if len(message.text.split()) > 1 else None
+        if not input_str:
+            await message.reply("Использование: /status <user_id> или /status @username")
+            return
+
+        employee = None
+        if input_str.startswith('@'):
+            # Поиск по username
+            username = input_str[1:]  # Убираем @
+            cursor.execute('SELECT user_id, name, username, archived FROM employees WHERE username = ?', (username,))
+            employee = cursor.fetchone()
+        else:
+            # Поиск по user_id
+            try:
+                user_id = int(input_str)
+                cursor.execute('SELECT user_id, name, username, archived FROM employees WHERE user_id = ?', (user_id,))
+                employee = cursor.fetchone()
+            except ValueError:
+                await message.reply("Неверный формат ID. Используйте /status <user_id> или /status @username")
+                return
+
         if not employee:
             await message.reply("Сотрудник не найден.")
             return
 
-        cursor.execute('SELECT country, start_date, end_date FROM trips WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT country, start_date, end_date FROM trips WHERE user_id = ?', (employee[0],))
         trips = cursor.fetchall()
         trip_info = ", ".join([f"{t[0]} ({t[1]} - {t[2]})" for t in trips])
 
-        cursor.execute('SELECT latitude, longitude, status, timestamp FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
+        cursor.execute('SELECT latitude, longitude, status, timestamp FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (employee[0],))
         checkin = cursor.fetchone()
         if checkin:
+            # Форматируем время в ЧЧ:ММ
+            checkin_time = datetime.fromisoformat(checkin[3]).strftime('%H:%M')
             maps_url = f"https://www.google.com/maps?q={checkin[0]},{checkin[1]}"
             await message.reply(
-                f"Сотрудник: {employee[0]}{f' @{employee[1]}' if employee[1] else ''}\n"
-                f"Статус: {'Архив' if employee[2] else 'Активен'}\n"
+                f"Сотрудник: {employee[1]}{f' @{employee[2]}' if employee[2] else ''}\n"
+                f"Статус: {'Архив' if employee[3] else 'Активен'}\n"
                 f"Поездки: {trip_info}\n"
-                f"Последний чек-ин: {checkin[3]}\n"
+                f"Последний чек-ин: {checkin_time}\n"
                 f"Карта: {maps_url}\n"
                 f"Статус: {checkin[2]}"
             )
         else:
             await message.reply(
-                f"Сотрудник: {employee[0]}{f' @{employee[1]}' if employee[1] else ''}\n"
-                f"Статус: {'Архив' if employee[2] else 'Активен'}\n"
+                f"Сотрудник: {employee[1]}{f' @{employee[2]}' if employee[2] else ''}\n"
+                f"Статус: {'Архив' if employee[3] else 'Активен'}\n"
                 f"Поездки: {trip_info}\n"
                 f"Чек-ины отсутствуют."
             )
     except IndexError:
-        await message.reply("Использование: /status <user_id>")
+        await message.reply("Использование: /status <user_id> или /status @username")
     except Exception as e:
         logging.error(f"Ошибка при получении статуса сотрудника: {e}")
         await message.reply("Произошла ошибка при получении статуса.")
@@ -462,7 +482,8 @@ async def export_checkins(message: Message):
             writer.writerow(checkin)
 
         output.seek(0)
-        await message.reply_document(InputFile(output, filename='checkins.csv'), caption="Экспорт чек-инов")
+        csv_data = output.getvalue().encode('utf-8')
+        await message.reply_document(BufferedInputFile(csv_data, filename='checkins.csv'), caption="Экспорт чек-инов")
         logging.info("Чек-ины экспортированы в CSV")
     except Exception as e:
         logging.error(f"Ошибка при экспорте чек-инов: {e}")
