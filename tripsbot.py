@@ -456,7 +456,7 @@ async def employee_status(message: Message):
             await message.reply(
                 f"Сотрудник: {employee[1]}{f' @{employee[2]}' if employee[2] else ''}\n"
                 f"Статус: {'Архив' if employee[3] else 'Активен'}\n"
-                f"Поездки: {trip_info}\n"
+                f"Поездки: { trip_info}\n"
                 f"Чек-ины отсутствуют."
             )
     except IndexError:
@@ -477,9 +477,19 @@ async def export_checkins(message: Message):
 
         output = StringIO()
         writer = csv.writer(output)
-        writer.writerow(['User ID', 'Name', 'Username', 'Latitude', 'Longitude', 'Status', 'Timestamp'])
+        writer.writerow(['User ID', 'Name', 'Username', 'Latitude', 'Longitude', 'Status', 'Timestamp', 'Country', 'Maps URL'])
+
         for checkin in checkins:
-            writer.writerow(checkin)
+            user_id, name, username, latitude, longitude, status, timestamp = checkin
+            # Находим страну из таблицы trips
+            checkin_date = datetime.fromisoformat(timestamp).strftime('%Y-%m-%d')
+            cursor.execute('SELECT country FROM trips WHERE user_id = ? AND ? BETWEEN start_date AND end_date', 
+                          (user_id, checkin_date))
+            trip = cursor.fetchone()
+            country = trip[0] if trip else 'Неизвестно'
+            # Формируем ссылку на Google Maps
+            maps_url = f"https://www.google.com/maps?q={latitude},{longitude}"
+            writer.writerow([user_id, name, username, latitude, longitude, status, timestamp, country, maps_url])
 
         output.seek(0)
         csv_data = output.getvalue().encode('utf-8')
