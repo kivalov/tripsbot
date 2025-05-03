@@ -16,6 +16,7 @@ from pytz import timezone
 from geopy.geocoders import Nominatim
 from dotenv import load_dotenv
 import os
+import re
 
 # Настройка логирования
 logging.basicConfig(
@@ -456,7 +457,7 @@ async def employee_status(message: Message):
             await message.reply(
                 f"Сотрудник: {employee[1]}{f' @{employee[2]}' if employee[2] else ''}\n"
                 f"Статус: {'Архив' if employee[3] else 'Активен'}\n"
-                f"Поездки: { trip_info}\n"
+                f"Поездки: {trip_info}\n"
                 f"Чек-ины отсутствуют."
             )
     except IndexError:
@@ -471,9 +472,32 @@ async def export_checkins(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        cursor.execute('SELECT c.user_id, e.name, e.username, c.latitude, c.longitude, c.status, c.timestamp '
-                      'FROM checkins c JOIN employees e ON c.user_id = e.user_id')
+        # Парсим аргумент команды
+        args = message.text.split()
+        weeks = None
+        if len(args) > 1:
+            match = re.match(r'^(\d+)w$', args[1])
+            if match:
+                weeks = int(match.group(1))
+            else:
+                await message.reply("Неверный формат. Используйте /export или /export <число>w (например, /export 2w).")
+                return
+
+        # Формируем SQL-запрос
+        query = ('SELECT c.user_id, e.name, e.username, c.latitude, c.longitude, c.status, c.timestamp '
+                 'FROM checkins c JOIN employees e ON c.user_id = e.user_id')
+        params = ()
+        if weeks is not None:
+            start_date = (datetime.now() - timedelta(weeks=weeks)).strftime('%Y-%m-%d')
+            query += ' WHERE date(c.timestamp) >= ?'
+            params = (start_date,)
+
+        cursor.execute(query, params)
         checkins = cursor.fetchall()
+
+        if not checkins:
+            await message.reply("Чек-ины за указанный период отсутствуют.")
+            return
 
         output = StringIO()
         writer = csv.writer(output)
@@ -481,6 +505,8 @@ async def export_checkins(message: Message):
 
         for checkin in checkins:
             user_id, name, username, latitude, longitude, status, timestamp = checkin
+            # Форматируем дату в ДД-ММ-ГГГГ ЧЧ:ММ
+            formatted_timestamp = datetime.fromisoformat(timestamp).strftime('%d-%m-%Y %H:%M')
             # Находим страну из таблицы trips
             checkin_date = datetime.fromisoformat(timestamp).strftime('%Y-%m-%d')
             cursor.execute('SELECT country FROM trips WHERE user_id = ? AND ? BETWEEN start_date AND end_date', 
@@ -489,12 +515,12 @@ async def export_checkins(message: Message):
             country = trip[0] if trip else 'Неизвестно'
             # Формируем ссылку на Google Maps
             maps_url = f"https://www.google.com/maps?q={latitude},{longitude}"
-            writer.writerow([user_id, name, username, latitude, longitude, status, timestamp, country, maps_url])
+            writer.writerow([user_id, name, username, latitude, longitude, status, formatted_timestamp, country, maps_url])
 
         output.seek(0)
         csv_data = output.getvalue().encode('utf-8')
         await message.reply_document(BufferedInputFile(csv_data, filename='checkins.csv'), caption="Экспорт чек-инов")
-        logging.info("Чек-ины экспортированы в CSV")
+        logging.info(f"Чек-ины экспортированы в CSV {'за последние ' + str(weeks) + ' недель' if weeks else 'за всё время'}")
     except Exception as e:
         logging.error(f"Ошибка при экспорте чек-инов: {e}")
         await message.reply("Произошла ошибка при экспорте чек-инов.")
