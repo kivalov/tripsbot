@@ -190,35 +190,35 @@ async def process_country(message: Message, state: FSMContext):
         return
     timezone_str = get_timezone_by_country(country)
     await state.update_data(country=country, timezone=timezone_str)
-    await message.reply("Введите дату начала пребывания (ГГГГ-ММ-ДД):")
+    await message.reply("Введите дату начала пребывания (ДД/ММ/ГГГГ):")
     await state.set_state(Registration.StartDate)
 
 @dp.message(Registration.StartDate)
 async def process_start_date(message: Message, state: FSMContext):
     """Обрабатывает ввод даты начала."""
     try:
-        start_date = datetime.strptime(message.text, '%Y-%m-%d')
-        await state.update_data(start_date=message.text)
-        await message.reply("Введите дату окончания пребывания (ГГГГ-ММ-ДД):")
+        start_date = datetime.strptime(message.text, '%d/%m/%Y')
+        await state.update_data(start_date=start_date.strftime('%Y-%m-%d'))
+        await message.reply("Введите дату окончания пребывания (ДД/ММ/ГГГГ):")
         await state.set_state(Registration.EndDate)
     except ValueError:
-        await message.reply("Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
+        await message.reply("Неверный формат даты. Используйте ДД/ММ/ГГГГ, например, 01/05/2025.")
 
 @dp.message(Registration.EndDate)
 async def process_end_date(message: Message, state: FSMContext):
     """Обрабатывает ввод даты окончания."""
     try:
-        end_date = datetime.strptime(message.text, '%Y-%m-%d')
+        end_date = datetime.strptime(message.text, '%d/%m/%Y')
         user_data = await state.get_data()
         start_date = datetime.strptime(user_data['start_date'], '%Y-%m-%d')
         if end_date < start_date:
             await message.reply("Дата окончания не может быть раньше даты начала.")
             return
-        await state.update_data(end_date=message.text)
+        await state.update_data(end_date=end_date.strftime('%Y-%m-%d'))
         await message.reply("Выберите частоту чек-инов:", reply_markup=frequency_keyboard)
         await state.set_state(Registration.Frequency)
     except ValueError:
-        await message.reply("Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
+        await message.reply("Неверный формат даты. Используйте ДД/ММ/ГГГГ, например, 01/05/2025.")
 
 @dp.callback_query(lambda c: c.data.startswith('freq_'))
 async def process_frequency(callback: CallbackQuery, state: FSMContext):
@@ -434,7 +434,7 @@ async def export_checkins(message: Message):
         return
     try:
         cursor.execute('SELECT c.user_id, e.name, e.username, c.latitude, c.longitude, c.status, c.timestamp '
-                      'FROM checkins c JOIN employees e ON c.user_id = e.user_id')
+                      'FROM checkins c JOIN e ON c.user_id = e.user_id')
         checkins = cursor.fetchall()
 
         output = StringIO()
@@ -463,6 +463,7 @@ async def show_map(message: Message):
             return
 
         markers = []
+        employee_info = []
         for emp in employees:
             user_id, name, username = emp
             cursor.execute('SELECT country, start_date, end_date, timezone FROM trips WHERE user_id = ? AND ? BETWEEN start_date AND end_date', 
@@ -480,17 +481,27 @@ async def show_map(message: Message):
                     tz = timezone(trip[3])
                     time_ago = format_time_ago(checkin[2], tz)
                     
-                    label = f"{name}{f' @{username}' if username else ''}, {start_str} - {end_str}, последний чек-ин: {time_ago}"
-                    label = label.replace(" ", "+")
-                    markers.append(f"{checkin[0]},{checkin[1]},{label}")
+                    # Добавляем координаты для карты
+                    markers.append(f"{checkin[0]},{checkin[1]}")
+                    # Собираем информацию о сотруднике для текстового сообщения
+                    employee_info.append(
+                        f"{name}{f' @{username}' if username else ''}, {start_str} - {end_str}, "
+                        f"последний чек-ин: {time_ago}, координаты: {checkin[0]}, {checkin[1]}"
+                    )
 
         if not markers:
             await message.reply("Нет актуальных геопозиций для активных сотрудников.")
             return
 
+        # Формируем текстовое сообщение с информацией о сотрудниках
+        response = "Позиции сотрудников:\n" + "\n".join(employee_info) + "\n\n"
+        
+        # Формируем ссылку на карту с координатами
         base_url = "https://www.google.com/maps/search/?api=1&query="
-        map_url = base_url + ",".join(markers)
-        await message.reply(f"Карта с позициями сотрудников:\n{map_url}")
+        map_url = base_url + "|".join(markers)
+        response += f"Карта: {map_url}"
+        
+        await message.reply(response)
     except Exception as e:
         logging.error(f"Ошибка при формировании карты: {e}")
         await message.reply("Произошла ошибка при формировании карты.")
