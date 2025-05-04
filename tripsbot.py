@@ -110,7 +110,21 @@ time_keyboard = InlineKeyboardMarkup(
     ]
 )
 
-# Состояния для регистрации
+trip_keyboard = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Изменить сроки", callback_data="edit_trip")],
+        [InlineKeyboardButton(text="Завершить просмотр", callback_data="finish_view")]
+    ]
+)
+
+new_trip_keyboard = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Новая командировка", callback_data="new_trip")],
+        [InlineKeyboardButton(text="Завершить", callback_data="finish_view")]
+    ]
+)
+
+# Состояния для регистрации и редактирования
 class Registration(StatesGroup):
     Name = State()
     Country = State()
@@ -119,6 +133,8 @@ class Registration(StatesGroup):
     Frequency = State()
     CheckinTime = State()
     AddAnotherCountry = State()
+    EditStartDate = State()
+    EditEndDate = State()
 
 # Словарь для отслеживания отправленных напоминаний
 reminders_sent = {}
@@ -167,11 +183,20 @@ def format_time_ago(timestamp, tz):
 
 @dp.message(CommandStart())
 async def start_command(message: Message, state: FSMContext):
-    """Обрабатывает команду /start и инициирует регистрацию."""
+    """Обрабатывает команду /start и инициирует регистрацию или предлагает новую командировку."""
     user_id = message.from_user.id
     cursor.execute('SELECT * FROM employees WHERE user_id = ?', (user_id,))
-    if cursor.fetchone():
-        await message.reply("Вы уже зарегистрированы. Отправьте геопозицию.", reply_markup=keyboard)
+    employee = cursor.fetchone()
+    if employee:
+        cursor.execute('SELECT id, country, start_date, end_date, checkin_frequency, checkin_time '
+                      'FROM trips WHERE user_id = ? AND date("now") BETWEEN start_date AND end_date', (user_id,))
+        active_trip = cursor.fetchone()
+        if active_trip:
+            await message.reply("Вы уже зарегистрированы. У вас есть активная командировка. "
+                              "Используйте /trip для просмотра или редактирования.", reply_markup=keyboard)
+        else:
+            await message.reply("Вы уже зарегистрированы, но активных командировок нет. "
+                              "Хотите создать новую командировку?", reply_markup=new_trip_keyboard)
     else:
         username = message.from_user.username or None
         await state.update_data(username=username, trips=[])
@@ -300,8 +325,10 @@ async def process_add_country(callback: CallbackQuery, state: FSMContext):
         user_data = await state.get_data()
         user_id = callback.from_user.id
         try:
-            cursor.execute('INSERT INTO employees (user_id, name, username) VALUES (?, ?, ?)', 
-                          (user_id, user_data['name'], user_data['username']))
+            # Если это регистрация нового сотрудника
+            if 'name' in user_data:
+                cursor.execute('INSERT INTO employees (user_id, name, username) VALUES (?, ?, ?)', 
+                              (user_id, user_data['name'], user_data['username']))
             for trip in user_data['trips']:
                 cursor.execute('''
                     INSERT INTO trips (user_id, country, timezone, start_date, end_date, checkin_frequency, checkin_time)
@@ -310,11 +337,89 @@ async def process_add_country(callback: CallbackQuery, state: FSMContext):
                       trip['checkin_frequency'], trip['checkin_time']))
             conn.commit()
             await callback.message.reply("Регистрация завершена! Отправляйте геопозицию.", reply_markup=keyboard)
-            logging.info(f"Пользователь {user_id} завершил регистрацию: {user_data['name']}")
+            logging.info(f"Пользователь {user_id} завершил регистрацию или добавил командировку: {user_data.get('name', 'существующий')}")
             await state.clear()
         except Exception as e:
             logging.error(f"Ошибка при сохранении данных пользователя {user_id}: {e}")
             await callback.message.reply("Произошла ошибка при регистрации. Попробуйте снова.")
+
+@dp.message(Command("trip"))
+async def view_trip(message: Message, state: FSMContext):
+    """Показывает текущую командировку сотрудника и предлагает редактировать сроки."""
+    user_id = message.from_user.id
+    cursor.execute('SELECT * FROM employees WHERE user_id = ?', (user_id,))
+    employee = cursor.fetchone()
+    if not employee:
+        await message.reply("Сначала зарегистрируйтесь с помощью /start")
+        return
+
+    cursor.execute('SELECT id, country, start_date, end_date, checkin_frequency, checkin_time '
+                  'FROM trips WHERE user_id = ? AND date("now") BETWEEN start_date AND end_date', (user_id,))
+    active_trip = cursor.fetchone()
+    if active_trip:
+        trip_id, country, start_date, end_date, frequency, checkin_time = active_trip
+        freq_text = {1: "1 раз в день", 2: "2 раза (утро, вечер)", 3: "3 раза (утро, день, вечер)"}.get(frequency, "Неизвестно")
+        time_text = {"morning": "08:00", "day": "14:00", "evening": "20:00"}.get(checkin_time, "Не указано")
+        await state.update_data(trip_id=trip_id)
+        await message.reply(
+            f"Ваша текущая командировка:\n"
+            f"Страна: {country}\n"
+            f"Даты: {start_date} - {end_date}\n"
+            f"Частота чек-инов: {freq_text}\n"
+            f"Время чек-ина: {time_text}\n"
+            f"Что хотите сделать?",
+            reply_markup=trip_keyboard
+        )
+    else:
+        await message.reply("У вас нет активных командировок. Хотите создать новую?", reply_markup=new_trip_keyboard)
+
+@dp.callback_query(lambda c: c.data in ['edit_trip', 'finish_view', 'new_trip'])
+async def handle_trip_action(callback: CallbackQuery, state: FSMContext):
+    """Обрабатывает действия с командировкой."""
+    if callback.data == "finish_view":
+        await callback.message.reply("Просмотр завершён.", reply_markup=keyboard)
+        await state.clear()
+    elif callback.data == "edit_trip":
+        await callback.message.reply("Введите новую дату начала пребывания (ДД/ММ/ГГГГ):")
+        await state.set_state(Registration.EditStartDate)
+    elif callback.data == "new_trip":
+        await state.update_data(trips=[])
+        await callback.message.reply("Введите страну новой командировки:")
+        await state.set_state(Registration.Country)
+
+@dp.message(Registration.EditStartDate)
+async def process_edit_start_date(message: Message, state: FSMContext):
+    """Обрабатывает ввод новой даты начала для редактирования командировки."""
+    try:
+        start_date = datetime.strptime(message.text, '%d/%m/%Y')
+        await state.update_data(start_date=start_date.strftime('%Y-%m-%d'))
+        await message.reply("Введите новую дату окончания пребывания (ДД/ММ/ГГГГ):")
+        await state.set_state(Registration.EditEndDate)
+    except ValueError:
+        await message.reply("Неверный формат даты. Используйте ДД/ММ/ГГГГ, например, 01/05/2025.")
+
+@dp.message(Registration.EditEndDate)
+async def process_edit_end_date(message: Message, state: FSMContext):
+    """Обрабатывает ввод новой даты окончания и обновляет командировку."""
+    try:
+        end_date = datetime.strptime(message.text, '%d/%m/%Y')
+        user_data = await state.get_data()
+        start_date = datetime.strptime(user_data['start_date'], '%Y-%m-%d')
+        if end_date < start_date:
+            await message.reply("Дата окончания не может быть раньше даты начала.")
+            return
+        trip_id = user_data.get('trip_id')
+        cursor.execute('UPDATE trips SET start_date = ?, end_date = ? WHERE id = ?', 
+                      (user_data['start_date'], end_date.strftime('%Y-%m-%d'), trip_id))
+        conn.commit()
+        await message.reply("Сроки командировки обновлены!", reply_markup=keyboard)
+        logging.info(f"Пользователь {message.from_user.id} обновил командировку ID {trip_id}")
+        await state.clear()
+    except ValueError:
+        await message.reply("Неверный формат даты. Используйте ДД/ММ/ГГГГ, например, 01/05/2025.")
+    except Exception as e:
+        logging.error(f"Ошибка при обновлении командировки: {e}")
+        await message.reply("Произошла ошибка при обновлении командировки.")
 
 class LocationFilter(BaseFilter):
     async def __call__(self, message: Message) -> bool:
@@ -417,12 +522,10 @@ async def employee_status(message: Message):
 
         employee = None
         if input_str.startswith('@'):
-            # Поиск по username
-            username = input_str[1:]  # Убираем @
+            username = input_str[1:]
             cursor.execute('SELECT user_id, name, username, archived FROM employees WHERE username = ?', (username,))
             employee = cursor.fetchone()
         else:
-            # Поиск по user_id
             try:
                 user_id = int(input_str)
                 cursor.execute('SELECT user_id, name, username, archived FROM employees WHERE user_id = ?', (user_id,))
@@ -442,7 +545,6 @@ async def employee_status(message: Message):
         cursor.execute('SELECT latitude, longitude, status, timestamp FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (employee[0],))
         checkin = cursor.fetchone()
         if checkin:
-            # Форматируем время в ЧЧ:ММ
             checkin_time = datetime.fromisoformat(checkin[3]).strftime('%H:%M')
             maps_url = f"https://www.google.com/maps?q={checkin[0]},{checkin[1]}"
             await message.reply(
@@ -472,31 +574,57 @@ async def export_checkins(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        # Парсим аргумент команды
         args = message.text.split()
         weeks = None
-        if len(args) > 1:
-            match = re.match(r'^(\d+)w$', args[1])
-            if match:
-                weeks = int(match.group(1))
+        employee_id = None
+
+        # Парсим аргументы
+        for arg in args[1:]:
+            if re.match(r'^(\d+)w$', arg):
+                weeks = int(re.match(r'^(\d+)w$', arg).group(1))
+            elif arg.startswith('@'):
+                username = arg[1:]
+                cursor.execute('SELECT user_id FROM employees WHERE username = ?', (username,))
+                result = cursor.fetchone()
+                if result:
+                    employee_id = result[0]
+                else:
+                    await message.reply(f"Пользователь {arg} не найден.")
+                    return
             else:
-                await message.reply("Неверный формат. Используйте /export или /export <число>w (например, /export 2w).")
-                return
+                try:
+                    employee_id = int(arg)
+                    cursor.execute('SELECT user_id FROM employees WHERE user_id = ?', (employee_id,))
+                    if not cursor.fetchone():
+                        await message.reply(f"Пользователь с ID {employee_id} не найден.")
+                        return
+                except ValueError:
+                    await message.reply(
+                        "Неверный формат. Используйте /export, /export <число>w, /export @username, "
+                        "/export <user_id>, или их комбинацию (например, /export 2w @username)."
+                    )
+                    return
 
         # Формируем SQL-запрос
         query = ('SELECT c.user_id, e.name, e.username, c.latitude, c.longitude, c.status, c.timestamp '
                  'FROM checkins c JOIN employees e ON c.user_id = e.user_id')
-        params = ()
+        conditions = []
+        params = []
         if weeks is not None:
             start_date = (datetime.now() - timedelta(weeks=weeks)).strftime('%Y-%m-%d')
-            query += ' WHERE date(c.timestamp) >= ?'
-            params = (start_date,)
+            conditions.append('date(c.timestamp) >= ?')
+            params.append(start_date)
+        if employee_id is not None:
+            conditions.append('c.user_id = ?')
+            params.append(employee_id)
+        if conditions:
+            query += ' WHERE ' + ' AND '.join(conditions)
 
         cursor.execute(query, params)
         checkins = cursor.fetchall()
 
         if not checkins:
-            await message.reply("Чек-ины за указанный период отсутствуют.")
+            await message.reply("Чек-ины за указанный период или для указанного сотрудника отсутствуют.")
             return
 
         output = StringIO()
@@ -505,22 +633,20 @@ async def export_checkins(message: Message):
 
         for checkin in checkins:
             user_id, name, username, latitude, longitude, status, timestamp = checkin
-            # Форматируем дату в ДД-ММ-ГГГГ ЧЧ:ММ
             formatted_timestamp = datetime.fromisoformat(timestamp).strftime('%d-%m-%Y %H:%M')
-            # Находим страну из таблицы trips
             checkin_date = datetime.fromisoformat(timestamp).strftime('%Y-%m-%d')
             cursor.execute('SELECT country FROM trips WHERE user_id = ? AND ? BETWEEN start_date AND end_date', 
                           (user_id, checkin_date))
             trip = cursor.fetchone()
             country = trip[0] if trip else 'Неизвестно'
-            # Формируем ссылку на Google Maps
             maps_url = f"https://www.google.com/maps?q={latitude},{longitude}"
             writer.writerow([user_id, name, username, latitude, longitude, status, formatted_timestamp, country, maps_url])
 
         output.seek(0)
         csv_data = output.getvalue().encode('utf-8')
         await message.reply_document(BufferedInputFile(csv_data, filename='checkins.csv'), caption="Экспорт чек-инов")
-        logging.info(f"Чек-ины экспортированы в CSV {'за последние ' + str(weeks) + ' недель' if weeks else 'за всё время'}")
+        logging.info(f"Чек-ины экспортированы в CSV {'за последние ' + str(weeks) + ' недель' if weeks else ''} "
+                     f"{'для сотрудника ' + str(employee_id) if employee_id else ''}")
     except Exception as e:
         logging.error(f"Ошибка при экспорте чек-инов: {e}")
         await message.reply("Произошла ошибка при экспорте чек-инов.")
@@ -588,28 +714,45 @@ async def check_employees():
                         3: [(8, 0), (14, 0), (20, 0)]
                     }[freq]
 
-                cursor.execute('SELECT timestamp FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
-                last_checkin = cursor.fetchone()
-                last_checkin_time = datetime.fromisoformat(last_checkin[0]).astimezone(tz) if last_checkin else datetime.strptime(current_trip[3], '%Y-%m-%d').astimezone(tz)
-
                 for checkin_hour, checkin_minute in checkin_times:
                     expected_time = current_time_tz.replace(hour=checkin_hour, minute=checkin_minute, second=0, microsecond=0)
-                    if expected_time.date() == current_time_tz.date():
-                        await send_reminder(user_id, tz, expected_time)
-                        if expected_time > last_checkin_time and (current_time_tz - expected_time).total_seconds() > 3600:
-                            last_location = ""
-                            cursor.execute('SELECT latitude, longitude FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
-                            last_location_data = cursor.fetchone()
-                            if last_location_data:
-                                last_location = f"Координаты: {last_location_data[0]}, {last_location_data[1]}"
-                            await bot.send_message(
-                                ADMIN_ID,
-                                f"Сотрудник {name}{f' @{username}' if username else ''} не отправил чек-ин!\n"
-                                f"Ожидалось: {expected_time.strftime('%H:%M')} ({tz.zone})\n"
-                                f"Последний чек-ин: {(last_checkin_time.strftime('%Y-%m-%d %H:%M') if last_checkin else 'Никогда')}\n"
-                                f"Последняя локация: {last_location or 'Неизвестно'}"
-                            )
-                            logging.warning(f"Пропущен чек-ин для {user_id} в {expected_time} ({tz.zone})")
+                    if expected_time.date() != current_time_tz.date():
+                        continue
+
+                    await send_reminder(user_id, tz, expected_time)
+
+                    # Проверяем чек-ины в окне: -90 минут до +20 минут от ожидаемого времени
+                    window_start = (expected_time - timedelta(minutes=90)).isoformat()
+                    window_end = (expected_time + timedelta(minutes=20)).isoformat()
+                    cursor.execute('SELECT timestamp FROM checkins WHERE user_id = ? AND timestamp BETWEEN ? AND ?',
+                                  (user_id, window_start, window_end))
+                    checkin_in_window = cursor.fetchone()
+
+                    if checkin_in_window:
+                        continue  # Чек-ин найден в окне, пропускаем уведомление
+
+                    # Если чек-ин пропущен
+                    cursor.execute('SELECT latitude, longitude, timestamp FROM checkins WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1', (user_id,))
+                    last_checkin = cursor.fetchone()
+                    last_location = "Неизвестно"
+                    maps_url = ""
+                    if last_checkin:
+                        latitude, longitude, last_timestamp = last_checkin
+                        last_location = f"Координаты: {latitude}, {longitude}"
+                        maps_url = f"https://www.google.com/maps?q={latitude},{longitude}"
+                        last_checkin_time = datetime.fromisoformat(last_timestamp).astimezone(tz)
+                    else:
+                        last_checkin_time = datetime.strptime(current_trip[3], '%Y-%m-%d').astimezone(tz)
+
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"Сотрудник {name}{f' @{username}' if username else ''} не отправил чек-ин!\n"
+                        f"Ожидалось: {expected_time.strftime('%H:%M')} ({tz.zone})\n"
+                        f"Последний чек-ин: {(last_checkin_time.strftime('%Y-%m-%d %H:%M') if last_checkin else 'Никогда')}\n"
+                        f"Последняя локация: {last_location}\n"
+                        f"Карта: {maps_url if maps_url else 'Отсутствует'}"
+                    )
+                    logging.warning(f"Пропущен чек-ин для {user_id} в {expected_time} ({tz.zone})")
         except Exception as e:
             logging.error(f"Ошибка в check_employees: {e}")
         await asyncio.sleep(1800)
